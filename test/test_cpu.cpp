@@ -298,3 +298,26 @@ TEST(test_inst, wordOp) {
 	ASSERT_NE(cpu, nullptr);
 	EXPECT_EQ(cpu->get_reg_value(A2), 0x7f00002a);
 }
+
+TEST(test_csr, csrs) {
+	std::stringstream asm_str;
+	asm_str << "addi t0, zero, 1\n"
+            << "addi t1, zero, 2\n"
+            << "addi t2, zero, 3\n"
+            << "csrrw zero, mstatus, t0\n"
+            << "csrrs zero, mtvec, t1\n"
+            << "csrrw zero, mepc, t2\n"
+            << "csrrc t2, mepc, zero\n"
+            << "csrrwi zero, sstatus, 4\n"
+            << "csrrsi zero, stvec, 5\n"
+            << "csrrwi zero, sepc, 6\n"
+            << "csrrci zero, sepc, 0";
+    std::unique_ptr<CPU> cpu = get_cpu_test(asm_str.str(), "csrs");
+	ASSERT_NE(cpu, nullptr);
+	EXPECT_EQ(cpu->get_csr_value(MSTATUS), 1);
+	EXPECT_EQ(cpu->get_csr_value(MTVEC), 2);
+	EXPECT_EQ(cpu->get_csr_value(MEPC), 3);
+	EXPECT_EQ(cpu->get_csr_value(SSTATUS), 0);
+	EXPECT_EQ(cpu->get_csr_value(STVEC), 5);
+	EXPECT_EQ(cpu->get_csr_value(SEPC), 6);
+}

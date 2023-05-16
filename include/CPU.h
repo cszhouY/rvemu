@@ -4,6 +4,7 @@
 #include "param.h"
 #include "exception.h"
 #include "Bus.h"
+#include "CSR.h"
 
 #include <vector>
 #include <sstream>
@@ -50,6 +51,10 @@ public:
 
     uint64_t get_reg_value(Reg_t t) const {
         return regs[t];
+    }
+
+    uint64_t get_csr_value(size_t t) {
+        return csr.load(t);
     }
 
     uint64_t get_pc_value() const {
@@ -99,6 +104,9 @@ private:
     uint64_t pc;
     // System bus that transfers data between CPU and peripheral devices.
     Bus bus;
+    // Control and status registers. RISC-V ISA sets aside a 12-bit encoding space (csr[11:0]) for
+    // up to 4096 CSRs.
+    CSR csr;
 };
 
 uint64_t CPU::execute(uint64_t inst) {
@@ -453,6 +461,53 @@ uint64_t CPU::execute(uint64_t inst) {
                          | ((inst >> 20) & 0x7fe);  // imm[10:1]
             return pc + imm;
         }
+        case 0x73: {
+            size_t csr_addr = (size_t)((inst & 0xfff00000) >> 20);
+            switch(funct3) {
+            case 0x1: {  // CSRRW
+                uint64_t t = csr.load(csr_addr);
+                csr.store(csr_addr, regs[rs1]);
+                regs[rd] = t;
+                return update_pc();
+            }
+            case 0x2: {  // CSRRS
+                uint64_t t = csr.load(csr_addr);
+                csr.store(csr_addr, t | regs[rs1]);
+                regs[rd] = t;
+                return update_pc();
+            }
+            case 0x3: {  // CSRRC
+                uint64_t t = csr.load(csr_addr);
+                csr.store(csr_addr, t & (~regs[rs1]));
+                regs[rd] = t;
+                return update_pc();
+            }
+            case 0x5: {  // CSRRWI
+                uint64_t zimm = (uint64_t)rs1;
+                uint64_t t = csr.load(csr_addr);
+                csr.store(csr_addr, zimm);
+                regs[rd] = t;
+                return update_pc();
+            }
+            case 0x6: { // CSRRSI
+                uint64_t zimm = (uint64_t)rs1;
+                uint64_t t = csr.load(csr_addr);
+                csr.store(csr_addr, t | zimm);
+                regs[rd] = t;
+                return update_pc();
+            }
+            case 0x7: { // CSRRCI
+                uint64_t zimm = (uint64_t)rs1;
+                uint64_t t = csr.load(csr_addr);
+                csr.store(csr_addr, t & (~zimm));
+                regs[rd] = t;
+                return update_pc();
+            }
+            default: {
+                throw IllegalInstruction(inst);
+            }
+        }
+        } 
         default: {
             throw IllegalInstruction(inst);
         }
