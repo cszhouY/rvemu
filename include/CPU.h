@@ -24,9 +24,15 @@ enum Reg_t {
     A6, A7, S2, S3, S4, S5, S6, S7, S8, S9, S10, S11, T3, T4, T5, T6 
 };
 
+// Riscv Privilege Mode
+typedef uint64_t Mode;
+const Mode user_mode = 0b00;
+const Mode supervisor_mode = 0b01;
+const Mode machine_mode = 0b11;
+
 class CPU {
 public:
-	CPU(std::vector<uint8_t>& code) : bus(code) {
+	CPU(std::vector<uint8_t>& code) : bus(code), mode(machine_mode) {
         for(int i = 0; i < 32; ++i) {
         	regs[i] = 0;
         }
@@ -107,6 +113,8 @@ private:
     // Control and status registers. RISC-V ISA sets aside a 12-bit encoding space (csr[11:0]) for
     // up to 4096 CSRs.
     CSR csr;
+    // The current priviledge mode.
+    Mode mode;
 };
 
 uint64_t CPU::execute(uint64_t inst) {
@@ -165,6 +173,17 @@ uint64_t CPU::execute(uint64_t inst) {
                 default: {
                     throw IllegalInstruction(inst);
                 }
+            }
+        }
+        case 0x0f: {
+            // A fence instruction does nothing because this emulator executes an
+            // instruction sequentially on a single thread.
+            if (0x0 == funct3) {  // FENCE
+                // Do nothing.
+                return update_pc();
+            }
+            else {
+                throw IllegalInstruction(inst);
             }
         }
         case 0x13: { // OP-IMM
@@ -283,6 +302,39 @@ uint64_t CPU::execute(uint64_t inst) {
                 }
             }
         }
+        case 0x2f: {
+            // RV64A: "A" standard extension for atomic instructions
+            uint64_t funct5 = (funct7 & 0b1111100) >> 2;
+            uint64_t _aq = (funct7 & 0b0000010) >> 1;
+            uint64_t _rl = funct7 & 0b0000001;
+            if (0x2 == funct3 && 0x00 == funct5) {  // amoadd.w
+                uint64_t t = load(regs[rs1], 32);
+                store(regs[rs1], 32, t + regs[rs2]);
+                regs[rd] = t;
+                return update_pc();
+            }
+            else if (0x3 == funct3 && 0x00 == funct5) {  // amoadd.d
+                uint64_t t = load(regs[rs1], 64);
+                store(regs[rs1], 64, t + regs[rs2]);
+                regs[rd] = t;
+                return update_pc();
+            }
+            else if (0x2 == funct3 && 0x01 == funct5) {  // amoswap.w
+                uint64_t t = load(regs[rs1], 32);
+                store(regs[rs1], 32, regs[rs2]);
+                regs[rd] = t;
+                return update_pc();
+            }
+            else if (0x3 == funct3 && 0x01 == funct5) {  // amoswap.d
+                uint64_t t = load(regs[rs1], 64);
+                store(regs[rs1], 64, regs[rs2]);
+                regs[rd] = t;
+                return update_pc();
+            }
+            else {
+                throw IllegalInstruction(inst);
+            }
+        }
         case 0x33: { // OP
             // "SLL, SRL, and SRA perform logical left, logical right, and arithmetic right
             // shifts on the value in register rs1 by the shift amount held in register rs2.
@@ -380,17 +432,30 @@ uint64_t CPU::execute(uint64_t inst) {
         		return update_pc();
             }
         	case 0x5: {
-        		if(0x00 == funct7) {  // SRLW
+        		if (0x00 == funct7) {  // SRLW
                     regs[rd] = (uint64_t)(int32_t)((uint32_t)regs[rs1] >> shamt);
                     return update_pc();
         		}
-        		else if(0x20 == funct7) { // SRAW
+                else if (0x01 == funct7) {  //DIVU
+                    regs[rd] = (0 == regs[rs2] ? 0xffffffff'ffffffff : regs[rs1] / regs[rs2]);
+                    return update_pc();
+                }
+        		else if (0x20 == funct7) { // SRAW
                     regs[rd] = (uint64_t)((int32_t)regs[rs1] >> (int32_t)shamt);
                     return update_pc();
         		}
         		else {
         			throw IllegalInstruction(inst);
         		}
+            }
+            case 0x7: {
+                if (0x01 == funct7) {  // REMUW
+                    regs[rd] = (0 == regs[rs2] ? regs[rs1] : (uint64_t)(int32_t)((uint32_t)regs[rs1] % (uint32_t)regs[rs2]));
+                    return update_pc();
+                }
+                else {
+                    throw IllegalInstruction(inst);
+                }
             }
         	default: {
         		throw IllegalInstruction(inst);
@@ -464,6 +529,56 @@ uint64_t CPU::execute(uint64_t inst) {
         case 0x73: {
             size_t csr_addr = (size_t)((inst & 0xfff00000) >> 20);
             switch(funct3) {
+            case 0x0: {
+                if (0x2 == rs2 && 0x8 == funct7) {  // SRET
+                    // When the SRET instruction is executed to return from the trap
+                    // handler, the privilege level is set to user mode if the SPP
+                    // bit is 0, or supervisor mode if the SPP bit is 1. The SPP bit
+                    // is SSTATUS[8].
+                    uint64_t sstatus = csr.load(SSTATUS);
+                    mode = (sstatus & MASK_SPP) >> 8;
+                    // The SPIE bit is SSTATUS[5] and the SIE bit is the SSTATUS[1]
+                    uint64_t spie = (sstatus & MASK_SPIE) >> 5;
+                    // set SIE = SPIE
+                    sstatus = (sstatus & (~MASK_SIE)) | (spie << 1);
+                    // set SPIE = 1
+                    sstatus |= MASK_SPIE;
+                    // set SPP the least priviledge mode (u-mode)
+                    sstatus &= ~MASK_SPP;
+                    csr.store(SSTATUS, sstatus);
+                    // set the pc to CSRs[sepc].
+                    // whenever IALIGN=32, bit sepc[1] is masked on reads so that it appears to be 0. This
+                    // masking occurs also for the implicit read by the SRET instruction. 
+                    uint64_t new_pc = csr.load(SEPC) & (~0b11);
+                    return new_pc;
+                }
+                else if (0x2 == rs2 && 0x18 == funct7) {  // MRET
+                    uint64_t mstatus = csr.load(MSTATUS);
+                    // MPP is two bits wide at MSTATUS[12:11]
+                    mode = (mstatus & MASK_MPP) >> 11;
+                    // The MPIE bit is MSTATUS[7] and the MIE bit is the MSTATUS[3].
+                    uint64_t mpie = (mstatus & MASK_MPIE) >> 7;
+                    // set MIE = MPIE
+                    mstatus = (mstatus & (~MASK_MIE)) | (mpie << 3);
+                    // set MPIE = 1
+                    mstatus |= MASK_MPIE;
+                    // set MPP the least priviledge mode (u-mode)
+                    mstatus &= ~MASK_MPP;
+                    // if MPP != M, set MPRV = 0
+                    mstatus &= ~MASK_MPRV;
+                    csr.store(MSTATUS, mstatus);
+                    // set the pc to CSRs[mepc].
+                    uint64_t new_pc = csr.load(MEPC) & (~0b11);
+                    return new_pc;
+                }
+                else if (funct7 = 0x9) {  // SFENCE.VMA
+                    // Do nothing.
+                    return update_pc();
+                }
+                else {
+                    throw IllegalInstruction(inst);
+                }
+            }
             case 0x1: {  // CSRRW
                 uint64_t t = csr.load(csr_addr);
                 csr.store(csr_addr, regs[rs1]);
