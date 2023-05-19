@@ -15,7 +15,7 @@ public:
 	// addr/size must be valid. Check in bus
 	uint64_t load(uint64_t addr, uint64_t size) {
         if (size != 8 && size != 16 && size != 32 && size != 64) {
-            throw LoadAccessFault();
+            throw LoadAccessFault(addr);
         }
         uint64_t nbytes = size / 8;
         uint64_t index = (addr - DRAM_BASE);
@@ -29,7 +29,7 @@ public:
     // addr/size must be valid. Check in bus
     void store(uint64_t addr, uint64_t size, uint64_t value) {
         if (size != 8 && size != 16 && size != 32 && size != 64) {
-            throw StoreAMOAccessFault();
+            throw StoreAMOAccessFault(addr);
         }
         uint64_t nbytes = size / 8;
         uint64_t index = (addr - DRAM_BASE);

@@ -69,22 +69,46 @@ public:
 
     uint64_t execute(uint64_t inst);
 
+    void handle_excption(RISCVException & e);
+
 	void circle() {
-		try{
-            while (pc <= DRAM_END) {
-                uint32_t inst = 0, new_pc = 0;
-    			inst = fetch();
+        uint32_t inst = 0, new_pc = 0;
+        while (pc <= DRAM_END) {
+            try {
+                inst = fetch();
                 new_pc = execute(inst);
                 pc = new_pc;
+            } catch (RISCVException & e) {
+                handle_excption(e);
+                if (e.is_fatal()) {
+                    std::cout << "\033[1m\033[31m" << e.what() << "#" << std::hex << e.value() << "\033[0m" << std::endl;
+                    break;
+                }
+                continue;
             }
-		}catch(const IllegalInstruction & e) {
-			std::cerr << e.what() << "#" << std::hex << std::setw(8) << std::setfill('0') << e.illegal_inst() << std::endl;
-		}catch(const StoreAMOAccessFault& e) {
-            std::cerr << e.what() << std::endl;
-        }catch(const LoadAccessFault & e) {
-            std::cerr << e.what() << std::endl;
         }
 	}
+
+    void circle(size_t clock) {
+        uint32_t inst = 0, new_pc = 0;
+        for(size_t i = 0; i < clock; ++i) {
+            if(pc > DRAM_END) {
+                break;
+            }
+            try {
+                inst = fetch();
+                new_pc = execute(inst);
+                pc = new_pc;
+            } catch (RISCVException & e) {
+                handle_excption(e);
+                if (e.is_fatal()) {
+                    std::cout << "\033[1m\033[31m" << e.what() << "#" << std::hex << e.value() << "\033[0m" << std::endl;
+                    break;
+                }
+                continue;
+            }
+        }
+    }
 
 	void dump_registers() {
 	    std::cout << std::string(80, '-') << std::endl;
@@ -103,6 +127,10 @@ public:
 	inline uint64_t update_pc() {
 		return pc + 4;
 	}
+
+    inline void set_pc(uint64_t new_pc) {
+        pc = new_pc;
+    }
 private:
     // 32 64-bit integer registers.
     uint64_t regs[32];
@@ -169,7 +197,7 @@ uint64_t CPU::execute(uint64_t inst) {
                 	uint64_t val = load(addr, 32);
                     regs[rd] = val;
                     return update_pc();
-                }
+                } 
                 default: {
                     throw IllegalInstruction(inst);
                 }
@@ -628,6 +656,95 @@ uint64_t CPU::execute(uint64_t inst) {
         }
     }
 }
-      
+
+/*!
+ * the process to handle exception in S-mode and M-mode is similar.
+ * include following steps:
+ * 1. set xPP to current mode.
+ * 2. update hart's privilege mode (M or S according to current mode and exception and exception setting).
+ * 3. save current pc in epc (spec in S-mode, mpec in M-mode).
+ * 4. set pc to trap vector (stvec in S-mode, mtvec in M-mode).
+ * 5. set cause to exception code (scause in S-mode, mcause in M-mode).
+ * 6. set trap value properly (stval in S-mode, mcause in M-mode).
+ * 7. set xPIE to xPIE (SPIE in S-mode, MPIE Iin M-mode).
+ * 8. clear up xIE (SIE IN S-mode, MIE in M-mode).
+ * */
+void CPU::handle_excption(RISCVException & e) {
+    // Save current PC, mode, and cause
+    uint64_t oldpc = pc, oldmode = mode;
+    uint64_t cause = e.code();
+    // If an exception happen in U-mode or S-mode, and the exception is delegated to S-mode.
+    // then this exception should be handled in S-mode.
+    bool trap_in_s_mode = (mode <= supervisor_mode) && csr.is_medelegated(cause);
+    // Select the appropriate trap vector and status register values
+    uint64_t STATUS, TVEC, CAUSE, TVAL, EPC, MASK_PIE, pie_i, MASK_IE, ie_i, MASK_PP, pp_i;
+    if (trap_in_s_mode) {
+        mode = supervisor_mode;
+        STATUS = SSTATUS;
+        TVEC = STVEC;
+        CAUSE = SCAUSE;
+        TVAL = STVAL;
+        EPC = SEPC;
+        MASK_PIE = MASK_SPIE;
+        pie_i = 5;
+        MASK_IE = MASK_SIE;
+        ie_i = 1;
+        MASK_PP = MASK_SPP;
+        pp_i = 8;
+    } else {
+        mode = machine_mode;
+        STATUS = MSTATUS;
+        TVEC = MTVEC;
+        CAUSE = MCAUSE;
+        TVAL = MTVAL;
+        EPC = MEPC;
+        MASK_PIE = MASK_MPIE;
+        pie_i = 7;
+        MASK_IE = MASK_MIE;
+        ie_i = 3;
+        MASK_PP = MASK_MPP;
+        pp_i = 11;
+    }
+
+    // 3.1.7 & 4.1.2
+    // The BASE field in tvec is a WARL field that can hold any valid virtual or physical address,
+    // subject to the following alignment constraints: the address must be 4-byte aligned
+    pc = csr.load(TVEC) & (~0b11);
+
+    // 3.1.14 & 4.1.7
+    // When a trap is taken into S-mode (or M-mode), sepc (or mepc) is written with the virtual address 
+    // of the instruction that was interrupted or that encountered the exception.
+    csr.store(EPC, oldpc);
+
+    // 3.1.15 & 4.1.8
+    // When a trap is taken into S-mode (or M-mode), scause (or mcause) is written with a code indicating 
+    // the event that caused the trap.
+    csr.store(CAUSE, cause);
+
+    // 3.1.16 & 4.1.9
+    // If stval is written with a nonzero value when a breakpoint, address-misaligned, access-fault, or
+    // page-fault exception occurs on an instruction fetch, load, or store, then stval will contain the
+    // faulting virtual address.
+    // If stval is written with a nonzero value when a misaligned load or store causes an access-fault or
+    // page-fault exception, then stval will contain the virtual address of the portion of the access that
+    // caused the fault
+    csr.store(TVAL, e.value());
+
+    // 3.1.6 covers both sstatus and mstatus.
+    uint64_t status = csr.load(STATUS);
+
+    // get SIE or MIE
+    uint64_t ie = (status & MASK_IE) >> ie_i;
+
+    // set SPIE = SIE / MPIE = MIE
+    status = (status & (~MASK_PIE)) | (ie << pie_i);
+
+    // set SIE = 0 / MIE = 0
+    status &= (~MASK_IE);
+
+    // set SPP / MPP = previous mode
+    status = (status & ~MASK_PP) | (oldmode << pp_i);
+    csr.store(STATUS, status);
+}    
 
 #endif

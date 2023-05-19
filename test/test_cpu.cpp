@@ -66,7 +66,7 @@ std::string generate_rv_assembly(const std::string & asm_str, const std::string 
 	return binfile;
 }
 
-std::unique_ptr<CPU> get_cpu_test(const std::string & asm_str, const std::string & case_name) {
+std::unique_ptr<CPU> get_cpu_test(const std::string & asm_str, size_t clock, const std::string & case_name) {
 	std::string binfile = generate_rv_assembly(asm_str, case_name);
 	if(binfile.empty()) {
 		return nullptr;
@@ -79,14 +79,28 @@ std::unique_ptr<CPU> get_cpu_test(const std::string & asm_str, const std::string
     std::vector<uint8_t> code((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
     file.close();
     std::unique_ptr<CPU> cpu = std::make_unique<CPU>(code);
-    cpu->circle();
+    // cpu->circle(clock);
+    for(size_t i = 0; i < clock; ++i) {
+        if(cpu->get_pc_value() > DRAM_END) {
+            break;
+        }
+        uint32_t inst = 0, new_pc = 0;
+        try {
+            inst = cpu->fetch();
+            new_pc = cpu->execute(inst);
+            cpu->set_pc(new_pc);
+        } catch (RISCVException & e) {
+            std::cout << "\033[1m\033[31m" << e.what() << "#" << std::hex << e.value() << "\033[0m" << std::endl;
+            break;
+        }
+    }
     return cpu;
 }
 
 TEST(test_inst, add) {
 	std::stringstream asm_str;
 	asm_str << "addi x31, x0, 42";
-	std::unique_ptr<CPU> cpu = get_cpu_test(asm_str.str(), "addi");
+	std::unique_ptr<CPU> cpu = get_cpu_test(asm_str.str(), 1, "addi");
 	ASSERT_NE(cpu, nullptr);
 	EXPECT_EQ(cpu->get_reg_value((Reg_t)31), 42);
 }
@@ -101,7 +115,7 @@ TEST(test_inst, simple) {
             << "ld s0, 8(sp)\n"
             << "addi sp, sp, 16\n"
             << "jr ra";
-    std::unique_ptr<CPU> cpu = get_cpu_test(asm_str.str(), "simple");
+    std::unique_ptr<CPU> cpu = get_cpu_test(asm_str.str(), 8, "simple");
 	ASSERT_NE(cpu, nullptr);
 	EXPECT_EQ(cpu->get_reg_value(A0), 42);
 }
@@ -109,7 +123,7 @@ TEST(test_inst, simple) {
 TEST(test_inst, lui) {
 	std::stringstream asm_str;
 	asm_str << "lui a0, 42";
-    std::unique_ptr<CPU> cpu = get_cpu_test(asm_str.str(), "lui");
+    std::unique_ptr<CPU> cpu = get_cpu_test(asm_str.str(), 1, "lui");
 	ASSERT_NE(cpu, nullptr);
 	EXPECT_EQ(cpu->get_reg_value(A0), 42 << 12);
 }
@@ -117,7 +131,7 @@ TEST(test_inst, lui) {
 TEST(test_inst, auipc) {
 	std::stringstream asm_str;
 	asm_str << "auipc a0, 42";
-    std::unique_ptr<CPU> cpu = get_cpu_test(asm_str.str(), "auipc");
+    std::unique_ptr<CPU> cpu = get_cpu_test(asm_str.str(), 1, "auipc");
 	ASSERT_NE(cpu, nullptr);
 	EXPECT_EQ(cpu->get_reg_value(A0), DRAM_BASE + (42 << 12));
 }
@@ -125,7 +139,7 @@ TEST(test_inst, auipc) {
 TEST(test_inst, jal) {
 	std::stringstream asm_str;
 	asm_str << "jal a0, 42";
-    std::unique_ptr<CPU> cpu = get_cpu_test(asm_str.str(), "jal");
+    std::unique_ptr<CPU> cpu = get_cpu_test(asm_str.str(), 1, "jal");
 	ASSERT_NE(cpu, nullptr);
 	EXPECT_EQ(cpu->get_reg_value(A0), DRAM_BASE + 4);
 	EXPECT_EQ(cpu->get_pc_value(), DRAM_BASE + 42);
@@ -135,7 +149,7 @@ TEST(test_inst, jalr) {
 	std::stringstream asm_str;
 	asm_str << "addi a1, zero, 42\n"
             << "jalr a0, -8(a1)";
-    std::unique_ptr<CPU> cpu = get_cpu_test(asm_str.str(), "jalr");
+    std::unique_ptr<CPU> cpu = get_cpu_test(asm_str.str(), 2, "jalr");
 	ASSERT_NE(cpu, nullptr);
 	EXPECT_EQ(cpu->get_reg_value(A0), DRAM_BASE + 8);
 	EXPECT_EQ(cpu->get_pc_value(), 34);
@@ -144,7 +158,7 @@ TEST(test_inst, jalr) {
 TEST(test_inst, beq) {
 	std::stringstream asm_str;
 	asm_str << "beq x0, x0, 42";
-    std::unique_ptr<CPU> cpu = get_cpu_test(asm_str.str(), "beq");
+    std::unique_ptr<CPU> cpu = get_cpu_test(asm_str.str(), 1, "beq");
 	ASSERT_NE(cpu, nullptr);
 	EXPECT_EQ(cpu->get_pc_value(), DRAM_BASE + 42);
 }
@@ -153,7 +167,7 @@ TEST(test_inst, bne) {
 	std::stringstream asm_str;
 	asm_str << "addi x1, x0, 10\n"
             << "bne  x0, x1, 42";
-    std::unique_ptr<CPU> cpu = get_cpu_test(asm_str.str(), "bne");
+    std::unique_ptr<CPU> cpu = get_cpu_test(asm_str.str(), 2, "bne");
 	ASSERT_NE(cpu, nullptr);
 	EXPECT_EQ(cpu->get_pc_value(), DRAM_BASE + 42 + 4);
 }
@@ -163,7 +177,7 @@ TEST(test_inst, blt) {
 	asm_str << "addi x1, x0, 10\n"
             << "addi x2, x0, 20\n"
             << "blt  x1, x2, 42";
-    std::unique_ptr<CPU> cpu = get_cpu_test(asm_str.str(), "blt");
+    std::unique_ptr<CPU> cpu = get_cpu_test(asm_str.str(), 3,  "blt");
 	ASSERT_NE(cpu, nullptr);
 	EXPECT_EQ(cpu->get_pc_value(), DRAM_BASE + 42 + 8);
 }
@@ -173,7 +187,7 @@ TEST(test_inst, bge) {
 	asm_str << "addi x1, x0, 10\n"
             << "addi x2, x0, 20\n"
             << "bge  x2, x1, 42";
-    std::unique_ptr<CPU> cpu = get_cpu_test(asm_str.str(), "bge");
+    std::unique_ptr<CPU> cpu = get_cpu_test(asm_str.str(), 3, "bge");
 	ASSERT_NE(cpu, nullptr);
 	EXPECT_EQ(cpu->get_pc_value(), DRAM_BASE + 42 + 8);
 }
@@ -183,7 +197,7 @@ TEST(test_inst, bltu) {
 	asm_str << "addi x1, x0, 10\n"
             << "addi x2, x0, 20\n"
             << "bltu x1, x2, 42";
-    std::unique_ptr<CPU> cpu = get_cpu_test(asm_str.str(), "bltu");
+    std::unique_ptr<CPU> cpu = get_cpu_test(asm_str.str(), 3, "bltu");
 	ASSERT_NE(cpu, nullptr);
 	EXPECT_EQ(cpu->get_pc_value(), DRAM_BASE + 42 + 8);
 }
@@ -193,7 +207,7 @@ TEST(test_inst, bgeu) {
 	asm_str << "addi x1, x0, 10\n"
             << "addi x2, x0, 20\n"
             << "bgeu x2, x1, 42";
-    std::unique_ptr<CPU> cpu = get_cpu_test(asm_str.str(), "bgeu");
+    std::unique_ptr<CPU> cpu = get_cpu_test(asm_str.str(), 3, "bgeu");
 	ASSERT_NE(cpu, nullptr);
 	EXPECT_EQ(cpu->get_pc_value(), DRAM_BASE + 42 + 8);
 }
@@ -205,7 +219,7 @@ TEST(test_inst, store_and_load) {
             << "sd   s0, 8(sp)\n"
             << "lb   t1, 8(sp)\n"
             << "lh   t2, 8(sp)";
-    std::unique_ptr<CPU> cpu = get_cpu_test(asm_str.str(), "store_load");
+    std::unique_ptr<CPU> cpu = get_cpu_test(asm_str.str(), 5, "store_load");
 	ASSERT_NE(cpu, nullptr);
 	EXPECT_EQ(cpu->get_reg_value(T1), 0);
 	EXPECT_EQ(cpu->get_reg_value(T2), 256);
@@ -218,7 +232,7 @@ TEST(test_inst, slt) {
             << "slt  t2, t0, t1\n"
             << "slti t3, t0, 42\n"
             << "sltiu t4, t0, 84";
-    std::unique_ptr<CPU> cpu = get_cpu_test(asm_str.str(), "slt");
+    std::unique_ptr<CPU> cpu = get_cpu_test(asm_str.str(), 5, "slt");
 	ASSERT_NE(cpu, nullptr);
 	EXPECT_EQ(cpu->get_reg_value(T2), 1);
 	EXPECT_EQ(cpu->get_reg_value(T3), 1);
@@ -230,7 +244,7 @@ TEST(test_inst, xor) {
 	asm_str << "addi a0, zero, 0b10\n"
             << "xori a1, a0, 0b01\n"
             << "xor a2, a1, a1";
-    std::unique_ptr<CPU> cpu = get_cpu_test(asm_str.str(), "xor");
+    std::unique_ptr<CPU> cpu = get_cpu_test(asm_str.str(), 3, "xor");
 	ASSERT_NE(cpu, nullptr);
 	EXPECT_EQ(cpu->get_reg_value(A1), 3);
 	EXPECT_EQ(cpu->get_reg_value(A2), 0);
@@ -241,7 +255,7 @@ TEST(test_inst, or) {
 	asm_str << "addi a0, zero, 0b10\n"
             << "ori  a1, a0, 0b01\n"
             << "or   a2, a0, a0";
-    std::unique_ptr<CPU> cpu = get_cpu_test(asm_str.str(), "or");
+    std::unique_ptr<CPU> cpu = get_cpu_test(asm_str.str(), 3, "or");
 	ASSERT_NE(cpu, nullptr);
 	EXPECT_EQ(cpu->get_reg_value(A1), 0b11);
 	EXPECT_EQ(cpu->get_reg_value(A2), 0b10);
@@ -252,7 +266,7 @@ TEST(test_inst, and) {
 	asm_str << "addi a0, zero, 0b10\n"
             << "andi a1, a0, 0b11\n"
             << "and  a2, a0, a1";
-    std::unique_ptr<CPU> cpu = get_cpu_test(asm_str.str(), "and");
+    std::unique_ptr<CPU> cpu = get_cpu_test(asm_str.str(), 3, "and");
 	ASSERT_NE(cpu, nullptr);
 	EXPECT_EQ(cpu->get_reg_value(A1), 0b10);
 	EXPECT_EQ(cpu->get_reg_value(A2), 0b10);
@@ -266,7 +280,7 @@ TEST(test_inst, sll) {
             << "slli a3, a0, 5\n"
             << "addi s0, zero, 64\n"
             << "sll  a4, a0, s0";
-    std::unique_ptr<CPU> cpu = get_cpu_test(asm_str.str(), "sll");
+    std::unique_ptr<CPU> cpu = get_cpu_test(asm_str.str(), 6, "sll");
 	ASSERT_NE(cpu, nullptr);
 	EXPECT_EQ(cpu->get_reg_value(A2), 1 << 5);
 	EXPECT_EQ(cpu->get_reg_value(A3), 1 << 5);
@@ -281,7 +295,7 @@ TEST(test_inst, sra_srl) {
             << "srai a3, a0, 2\n"
             << "srli a4, a0, 2\n"
             << "srl  a5, a0, a1";
-    std::unique_ptr<CPU> cpu = get_cpu_test(asm_str.str(), "sra_srl");
+    std::unique_ptr<CPU> cpu = get_cpu_test(asm_str.str(), 6, "sra_srl");
 	ASSERT_NE(cpu, nullptr);
 	EXPECT_EQ(cpu->get_reg_value(A2), (uint64_t)(int64_t)(-4));
 	EXPECT_EQ(cpu->get_reg_value(A3), (uint64_t)(int64_t)(-2));
@@ -294,7 +308,7 @@ TEST(test_inst, wordOp) {
 	asm_str << "addi a0, zero, 42\n" 
             << "lui  a1, 0x7f000\n"
             << "addw a2, a0, a1";
-    std::unique_ptr<CPU> cpu = get_cpu_test(asm_str.str(), "sra_srl");
+    std::unique_ptr<CPU> cpu = get_cpu_test(asm_str.str(), 3, "sra_srl");
 	ASSERT_NE(cpu, nullptr);
 	EXPECT_EQ(cpu->get_reg_value(A2), 0x7f00002a);
 }
@@ -312,7 +326,7 @@ TEST(test_csr, csrs) {
             << "csrrsi zero, stvec, 5\n"
             << "csrrwi zero, sepc, 6\n"
             << "csrrci zero, sepc, 0";
-    std::unique_ptr<CPU> cpu = get_cpu_test(asm_str.str(), "csrs");
+    std::unique_ptr<CPU> cpu = get_cpu_test(asm_str.str(), 11, "csrs");
 	ASSERT_NE(cpu, nullptr);
 	EXPECT_EQ(cpu->get_csr_value(MSTATUS), 1);
 	EXPECT_EQ(cpu->get_csr_value(MTVEC), 2);

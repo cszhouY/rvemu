@@ -15,7 +15,7 @@ public:
         if (addr >= DRAM_BASE && addr <= DRAM_END) {
             return dram.load(addr, size);
         } else {
-            throw LoadAccessFault();
+            throw LoadAccessFault(addr);
         }
     }
 
@@ -23,7 +23,7 @@ public:
         if (addr >= DRAM_BASE && addr <= DRAM_END) {
             dram.store(addr, size, value);
         } else {
-            throw StoreAMOAccessFault();
+            throw StoreAMOAccessFault(addr);
         }
     }
 private:
