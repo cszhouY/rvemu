@@ -29,6 +29,7 @@ public:
     // addr/size must be valid. Check in bus
     void store(uint64_t addr, uint64_t size, uint64_t value) {
         if (size != 8 && size != 16 && size != 32 && size != 64) {
+            std::cout << "dram.store" << std::endl;
             throw StoreAMOAccessFault(addr);
         }
         uint64_t nbytes = size / 8;

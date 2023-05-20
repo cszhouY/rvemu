@@ -1,77 +1,21 @@
+#include "generator.h"
 #include "CPU.h"
 #include "gtest/gtest.h"
 
-#include <string>
-#include <sstream>
-#include <cstdlib>
-#include <filesystem>
-#include <iostream>
-#include <fstream>
-#include <vector>
-#include <memory>
-
-std::string command_process(const std::string & command) {
-	FILE* pipe = popen(command.c_str(), "r");
-	std::string res;
-	char buffer[128];
-	while (fgets(buffer, 128, pipe) != NULL) {
-		res += buffer;
-	}
-	pclose(pipe);
-	return res;
-}
-
-bool write_rv_assembly(const std::string & asm_str, const std::string & filepath) {
-	// create directory for test cases if not exists 
-	if(!std::filesystem::exists("test")){ 
-		if (!std::filesystem::create_directory("test")) {
-			std::cerr << "Failed to create directory." << std::endl;
-            return false;
-        }
-	}
-	// write asm_str
-	std::ofstream outfile(filepath);
-	if (outfile.is_open()) {
-		outfile << asm_str;
-		outfile.close();
-	} else {
-		std::cerr << "Failed to open file.\n";
-		return false;
-	}
-	std::cout << "write assembly file successful!" << std::endl;
-	return true;
-}
-
-std::string generate_rv_assembly(const std::string & asm_str, const std::string & asm_name) {
-	std::string asmfile = "./test/" + asm_name + ".S";
-	std::string objfile = "./test/" + asm_name + ".o";
-	std::string binfile = "./test/" + asm_name + ".bin";
-	if(! write_rv_assembly(asm_str, asmfile)) {
-		return "";
-	}
-	std::string cc = "clang", objcopy = "llvm-objcopy";
-	std::string command1 = cc + " -target riscv64-unknown-elf -c -march=rv64g -mabi=lp64 -mno-relax " 
-							+ asmfile + " -o " + objfile;
-	std::string res1 = command_process(command1);
-	if(!res1.empty()) {
-		std::cout << res1 << std::endl;
-		return "";
-	}
-	std::string command2 = objcopy + " -O binary " + objfile + " " + binfile;
-	std::string res2 = command_process(command2); 
-	if(!res2.empty()) {
-		std::cout << res2 << std::endl;
-		return "";
-	}
-	return binfile;
-}
-
 std::unique_ptr<CPU> get_cpu_test(const std::string & asm_str, size_t clock, const std::string & case_name) {
-	std::string binfile = generate_rv_assembly(asm_str, case_name);
-	if(binfile.empty()) {
+	std::string asmfile = case_name + ".S";
+	if(! Generator::write_rv_src(asm_str, asmfile)) {
 		return nullptr;
 	}
-	std::ifstream file(binfile, std::ios::binary);
+	std::string objfile = case_name + ".o";
+	if(! Generator::generate_rv_obj(asmfile, objfile)) {
+		return nullptr;
+	}
+	std::string binfile = case_name + ".bin";
+	if(! Generator::generate_rv_binary(objfile, binfile)) {
+		return nullptr;
+	}
+	std::ifstream file("./test/" + binfile, std::ios::binary);
     if(!file){
         std::cerr << "open file error" << std::endl;
         return nullptr;
@@ -94,6 +38,31 @@ std::unique_ptr<CPU> get_cpu_test(const std::string & asm_str, size_t clock, con
             break;
         }
     }
+    return cpu;
+}
+
+std::unique_ptr<CPU> get_cpu_test(const std::string & src_str, const std::string & case_name) {
+	std::string srcfile = case_name + ".c";
+	if(! Generator::write_rv_src(src_str, srcfile)) {
+		return nullptr;
+	}
+	std::string objfile = case_name + ".o";
+	if(! Generator::generate_rv_obj(srcfile, objfile)) {
+		return nullptr;
+	}
+	std::string binfile = case_name + ".bin";
+	if(! Generator::generate_rv_binary(objfile, binfile)) {
+		return nullptr;
+	}
+	std::ifstream file("./test/" + binfile, std::ios::binary);
+    if(!file){
+        std::cerr << "open file error" << std::endl;
+        return nullptr;
+    }
+    std::vector<uint8_t> code((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    file.close();
+    std::unique_ptr<CPU> cpu = std::make_unique<CPU>(code);
+    cpu->circle();
     return cpu;
 }
 
@@ -334,4 +303,47 @@ TEST(test_csr, csrs) {
 	EXPECT_EQ(cpu->get_csr_value(SSTATUS), 0);
 	EXPECT_EQ(cpu->get_csr_value(STVEC), 5);
 	EXPECT_EQ(cpu->get_csr_value(SEPC), 6);
+}
+
+TEST(test_uart, print) {
+	std::string src_str = R"(
+		int main() {
+			volatile char *uart = (volatile char *) 0x10000000;
+		    uart[0] = 'H';
+		    uart[0] = 'e';
+		    uart[0] = 'l';
+		    uart[0] = 'l';
+		    uart[0] = 'o';
+		    uart[0] = ',';
+		    uart[0] = ' ';
+		    uart[0] = 'w';
+		    uart[0] = 'o';
+		    uart[0] = 'r';
+		    uart[0] = 'l';
+		    uart[0] = 'd';
+		    uart[0] = '!';
+		    uart[0] = '\n';
+		    return 0;
+		}
+	)";
+    std::unique_ptr<CPU> cpu = get_cpu_test(src_str, "print");
+	ASSERT_NE(cpu, nullptr);
+}
+
+TEST(test_uart, echo) {
+	std::string src_str = R"(
+		int main() {
+		    while (1) {
+		        volatile char *uart = (volatile char *) 0x10000000;
+		        while ((uart[5] & 0x01) == 0);
+		        char c = uart[0];
+		        if ('a' <= c && c <= 'z') {
+		            c = c + 'A' - 'a';
+		        }
+		        uart[0] = c;
+		    }
+		}
+	)";
+	std::unique_ptr<CPU> cpu = get_cpu_test(src_str, "echo");
+	ASSERT_NE(cpu, nullptr);
 }

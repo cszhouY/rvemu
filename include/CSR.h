@@ -127,11 +127,11 @@ public:
 	}
 
 	bool is_medelegated(uint64_t cause) {
-		return (csrs[MEDELEG] >> cause) & 1;
+		return (csrs[MEDELEG] >> (uint32_t)cause) & 1;
 	}
 
 	bool is_midelegated(uint64_t cause) {
-		return (csrs[MIDELEG] >> cause) & 1;
+		return (csrs[MIDELEG] >> (uint32_t)cause) & 1;
 	}
 
 private:
