@@ -42,6 +42,10 @@ public:
             throw StoreAMOAccessFault(addr);
         }
     }
+
+    bool uart_is_interrupting() {
+        return uart.is_interrupting();
+    }
 private:
 	Dram dram;
     Plic plic;

@@ -5,6 +5,7 @@
 #include "exception.h"
 #include "Bus.h"
 #include "CSR.h"
+#include "interrupt.h"
 
 #include <vector>
 #include <sstream>
@@ -71,6 +72,10 @@ public:
 
     void handle_excption(RISCVException & e);
 
+    void handle_interrupt(RISCVInterrupt & interrupt);
+
+    void check_pending_interrupt();
+
 	void circle() {
         uint32_t inst = 0, new_pc = 0;
         while (pc <= DRAM_END) {
@@ -78,6 +83,7 @@ public:
                 inst = fetch();
                 new_pc = execute(inst);
                 pc = new_pc;
+                check_pending_interrupt();
             } catch (RISCVException & e) {
                 handle_excption(e);
                 if (e.is_fatal()) {
@@ -85,30 +91,11 @@ public:
                     break;
                 }
                 continue;
+            } catch (RISCVInterrupt & interrupt) {
+                handle_interrupt(interrupt);
             }
         }
 	}
-
-    void circle(size_t clock) {
-        uint32_t inst = 0, new_pc = 0;
-        for(size_t i = 0; i < clock; ++i) {
-            if(pc > DRAM_END) {
-                break;
-            }
-            try {
-                inst = fetch();
-                new_pc = execute(inst);
-                pc = new_pc;
-            } catch (RISCVException & e) {
-                handle_excption(e);
-                if (e.is_fatal()) {
-                    std::cout << "\033[1m\033[31m" << e.what() << "#" << std::hex << e.value() << "\033[0m" << std::endl;
-                    break;
-                }
-                continue;
-            }
-        }
-    }
 
 	void dump_registers() {
 	    std::cout << std::string(80, '-') << std::endl;
@@ -745,6 +732,144 @@ void CPU::handle_excption(RISCVException & e) {
     // set SPP / MPP = previous mode
     status = (status & ~MASK_PP) | (oldmode << pp_i);
     csr.store(STATUS, status);
-}    
+}
+
+/*!
+ * The procedure of handling interrupt is similar to that of handling exception. 
+ * 1. update hart's privilege mode (M or S according to current mode and exception setting).
+ * 2. save current pc in epc (spec in S-mode, mpec in M-mode).
+ * 3. set pc properly according to the MODE field of trap vector (stvex in S-mode, mtvec in M-mode).
+ * 4. set cause register with exception code (Scause in S-mode, mcause in M-moded).
+ * 5. set xPIE to xIE (SPIE in S-mode, MPIE in M-mode).
+ * 6. clear up xIE (SIE in S-mode, MIE in M-mode).
+ * 7. set xPP to previous mode. 
+ * */
+void CPU::handle_interrupt(RISCVInterrupt & interrupt) {
+    uint64_t oldpc = pc, oldmode = mode;
+    uint64_t cause = interrupt.code();
+    // although cause contains a interrupt bit. Shift the cause make it out.
+    bool trap_in_s_mode = (mode <= supervisor_mode) && csr.is_midelegated(cause);
+    uint64_t STATUS, TVEC, CAUSE, TVAL, EPC, MASK_PIE, pie_i, MASK_IE, ie_i, MASK_PP, pp_i;
+    if (trap_in_s_mode) {
+        mode = supervisor_mode;
+        STATUS = SSTATUS;
+        TVEC = STVEC;
+        CAUSE = SCAUSE;
+        TVAL = STVAL;
+        EPC = SEPC;
+        MASK_PIE = MASK_SPIE;
+        pie_i = 5;
+        MASK_IE = MASK_SIE;
+        ie_i = 1;
+        MASK_PP = MASK_SPP;
+        pp_i = 8;
+    } else {
+        mode = machine_mode;
+        STATUS = MSTATUS;
+        TVEC = MTVEC;
+        CAUSE = MCAUSE;
+        TVAL = MTVAL;
+        EPC = MEPC;
+        MASK_PIE = MASK_MPIE;
+        pie_i = 7;
+        MASK_IE = MASK_MIE;
+        ie_i = 3;
+        MASK_PP = MASK_MPP;
+        pp_i = 11;
+    }
+    // 3.1.7 & 4.1.2
+    // When MODE=Direct, all traps into machine mode cause the pc to be set to the address in the BASE field. 
+    // When MODE=Vectored, all synchronous exceptions into machine mode cause the pc to be set to the address 
+    // in the BASE field, whereas interrupts cause the pc to be set to the address in the BASE field plus four 
+    // times the interrupt cause number.
+    uint64_t tvec = csr.load(TVEC);
+    uint64_t tvec_mode = tvec & 0b11;
+    uint64_t tvec_base = tvec & (~0b11);
+    if(0 == tvec_mode) {
+        pc = tvec_base;
+    } else if (1 == tvec_mode) {
+        pc = tvec_base + cause << 2;
+    } else {
+        throw std::logic_error("Unreachable code reached");
+    }
+    // 3.1.14 & 4.1.7
+    // When a trap is taken into S-mode (or M-mode), sepc (or mepc) is written with the virtual address 
+    // of the instruction that was interrupted or that encountered the exception.
+    csr.store(EPC, oldpc);
+    // 3.1.15 & 4.1.8
+    // When a trap is taken into S-mode (or M-mode), scause (or mcause) is written with a code indicating 
+    // the event that caused the trap.
+    csr.store(CAUSE, cause);
+    // 3.1.16 & 4.1.9
+    // When a trap is taken into M-mode, mtval is either set to zero or written with exception-specific 
+    // information to assist software in handling the trap.
+    csr.store(TVAL, 0);
+    // 3.1.6 covers both sstatus and mstatus.
+    uint64_t status = csr.load(STATUS);
+    // get SIE or MIE
+    uint64_t ie = (status & MASK_IE) >> ie_i;
+    // set SPIE = SIE or MPIE = MIE
+    status = (status & (~MASK_PIE)) | (ie << pie_i);
+    // set SIE = 0 or MIE = 0
+    status &= !MASK_IE;
+    // set SPP or MPP = previous mode
+    status = (status & (~MASK_PP)) | (oldmode << pp_i);
+    csr.store(STATUS, status);
+}   
+
+void CPU::check_pending_interrupt() {
+    // 3.1.6.1
+    // When a hart is executing in privilege mode x, interrupts are globally enabled when x IE=1 and globally 
+    // disabled when xIE=0. Interrupts for lower-privilege modes, w<x, are always globally disabled regardless 
+    // of the setting of any global wIE bit for the lower-privilege mode. Interrupts for higher-privilege modes, 
+    // y>x, are always globally enabled regardless of the setting of the global yIE bit for the higher-privilege 
+    // mode. Higher-privilege-level code can use separate per-interrupt enable bits to disable selected higher-
+    // privilege-mode interrupts before ceding control to a lower-privilege mode
+ 
+    // 3.1.9 & 4.1.3
+    // An interrupt i will trap to M-mode (causing the privilege mode to change to M-mode) if all of
+    // the following are true: (a) either the current privilege mode is M and the MIE bit in the mstatus
+    // register is set, or the current privilege mode has less privilege than M-mode; (b) bit i is set in both
+    // mip and mie; and (c) if register mideleg exists, bit i is not set in mideleg.
+    if (machine_mode == mode && 0 == (csr.load(MSTATUS) & MASK_MIE)) {
+        return;
+    }
+    if(supervisor_mode == mode && 0 == (csr.load(SSTATUS) & MASK_SIE)) {
+        return;
+    }
+    // In fact, we should using priority to decide which interrupt should be handled first.
+    if (bus.uart_is_interrupting()) {
+        bus.store(PLIC_SCLAIM, 32, UART_IRQ);
+        csr.store(MIP, csr.load(MIP) | MASK_SEIP);
+    }
+    // 3.1.9 & 4.1.3
+    // Multiple simultaneous interrupts destined for M-mode are handled in the following decreasing
+    // priority order: MEI, MSI, MTI, SEI, SSI, STI.
+    uint64_t pending = csr.load(MIE) & csr.load(MIP);
+    if (pending & MASK_MEIP) {
+        csr.store(MIP, csr.load(MIP) & (~MASK_MEIP));
+        throw MachineExternalInterrupt();
+    }
+    if (pending & MASK_MSIP) {
+        csr.store(MIP, csr.load(MIP) & (~MASK_MSIP));
+        throw MachineSoftwareInterrupt();
+    }
+    if (pending & MASK_MTIP) {
+        csr.store(MIP, csr.load(MIP) & (~MASK_MTIP));
+        throw MachineTimerInterrupt();
+    }
+    if (pending & MASK_SEIP) {
+        csr.store(MIP, csr.load(MIP) & (~MASK_SEIP));
+        throw SupervisorExternalInterrupt();
+    }
+    if (pending & MASK_SSIP) {
+        csr.store(MIP, csr.load(MIP) & (~MASK_SSIP));
+        throw SupervisorSoftwareInterrupt();
+    }
+    if (pending & MASK_STIP) {
+        csr.store(MIP, csr.load(MIP) & (~MASK_STIP));
+        throw SupervisorTimerInterrupt();
+    }
+}
 
 #endif
