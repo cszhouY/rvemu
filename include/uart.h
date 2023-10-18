@@ -48,6 +48,7 @@ public:
 
 	uint64_t load(uint64_t addr, uint64_t size) {
 	    if (size != 8) {
+	    	std::cerr << "uart LoadAccessFault\n";
 	        throw LoadAccessFault(addr);
 	    }
 	    std::unique_lock<std::mutex> lock(mutex_);

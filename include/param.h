@@ -2,6 +2,7 @@
 #define _PARAM_H_
 
 #include <cstdint>
+#include <iostream>
 
 /*!
  * memory layout following QEMU
@@ -56,5 +57,58 @@ const uint64_t UART_LSR = 5;
 const uint64_t MASK_UART_LSR_RX = 1;
 // The transmitter (TX) bit MASK.
 const uint64_t MASK_UART_LSR_TX = 1 << 5;
+
+// Virtio
+// The address which virtio starts.
+const uint64_t VIRTIO_BASE = 0x1000'1000;
+// the size of virtio
+const uint64_t VIRTIO_SIZE = 0x1000;
+// the interupt request of virtio.
+const uint64_t VIRTIO_END = VIRTIO_BASE + VIRTIO_SIZE - 1;
+const uint64_t VIRTIO_IRQ = 1;
+
+// the number of virtio descriptors that must be power of 2
+const uint64_t DESC_NUM = 8;
+
+// always return 0x74726976
+const uint64_t VIRTIO_MAGIC = VIRTIO_BASE + 0x000;
+// The version. 1 is legacy.
+const uint64_t VIRTIO_VERSION = VIRTIO_BASE + 0x004;
+// device type; 1 is net, 2 is disk
+const uint64_t VIRTIO_DEVICE_ID = VIRTIO_BASE + 0x008;
+// always return 0x554d4551
+const uint64_t VIRTIO_VENDOR_ID = VIRTIO_BASE + 0x00c;
+// Device feature.
+const uint64_t VIRTIO_DEVICE_FEATURES = VIRTIO_BASE + 0x010;
+// Driver features
+const uint64_t VIRTIO_DRIVER_FEATURES = VIRTIO_BASE + 0X020;
+// Page size for PFN, write-only
+const uint64_t VIRTIO_GUEST_PAGE_SIZE = VIRTIO_BASE + 0x028;
+// Select queue, write-only
+const uint64_t VIRTIO_QUEUE_SEL = VIRTIO_BASE + 0x30;
+// Max size of current queue, read-only. In QEMU, `VIRTIO_COUNT = 8`.
+const uint64_t VIRTIO_QUEUE_NUM_MAX = VIRTIO_BASE + 0x034;
+// size of current queue, write-only
+const uint64_t VIRTIO_QUEUE_NUM = VIRTIO_BASE + 0x38;
+// Physical page number for queue, read and write.
+const uint64_t VIRTIO_QUEUE_PFN = VIRTIO_BASE + 0x040; 
+// Notify the queue number, write-only.
+const uint64_t VIRTIO_QUEUE_NOTIFY = VIRTIO_BASE + 0x050;
+// Device status, read and write. Reading from this register returns the current device status flags.
+// Writing non-zero values to this register sets the status flags, indicating the OS/driver
+// progress. Writing zero (0x0) to this register triggers a device reset.
+const uint64_t VIRTIO_STATUS = VIRTIO_BASE + 0x070;
+
+const uint64_t PAGE_SIZE = 4096;
+const uint64_t SECTOR_SIZE = 512;
+
+// virtio block request type
+const uint32_t VIRTIO_BLK_T_IN = 0;
+const uint32_t VIRTIO_BLK_T_OUT = 1;
+
+// virtqueue descriptor flags
+const uint16_t VIRTQ_DESC_F_NEXT = 1;
+const uint16_t VIRTQ_DESC_F_WRITE = 2;
+const uint64_t VIRTQ_DESC_F_INDIRECT = 4;
 
 #endif

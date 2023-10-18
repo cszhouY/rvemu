@@ -11,7 +11,7 @@
 //     IllegalInstruction
 // };
 
-class RISCVException: std::exception {
+class RISCVException {
 public:
 	RISCVException(uint64_t code, uint64_t value): code_(code), value_(value) {}
 	int code() const { return code_; }
@@ -34,7 +34,7 @@ public:
 class InstructionAccessFault: public RISCVException {
 public:
 	InstructionAccessFault(uint64_t addr): RISCVException(1, addr) {}
-	const char * what() { return "Instruction Access Fault"; }
+	const char * what() const throw () { return "Instruction Access Fault"; }
 	bool is_fatal() { return true; }
 };
 
@@ -48,7 +48,7 @@ public:
 class Breakpoint: public RISCVException {
 public:
 	Breakpoint(uint64_t pc): RISCVException(3, pc) {}
-	const char * what() { return "Breakpoint"; }
+	const char * what() const throw () { return "Breakpoint"; }
 	bool is_fatal() { return false; }
 };
 

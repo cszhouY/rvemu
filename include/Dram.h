@@ -15,13 +15,14 @@ public:
 	// addr/size must be valid. Check in bus
 	uint64_t load(uint64_t addr, uint64_t size) {
         if (size != 8 && size != 16 && size != 32 && size != 64) {
+            std::cerr << "dram LoadAccessFault\n";
             throw LoadAccessFault(addr);
         }
         uint64_t nbytes = size / 8;
         uint64_t index = (addr - DRAM_BASE);
         uint64_t code = dram[index];
         for (uint64_t i = 1; i < nbytes; ++i) {
-            code |= (dram[index + i] << (i * 8));
+            code |= ((uint64_t)dram[index + i] << (i * 8));
         }
         return code;
     }
@@ -29,14 +30,14 @@ public:
     // addr/size must be valid. Check in bus
     void store(uint64_t addr, uint64_t size, uint64_t value) {
         if (size != 8 && size != 16 && size != 32 && size != 64) {
-            std::cout << "dram.store" << std::endl;
+            // std::cout << "dram.store" << std::endl;
             throw StoreAMOAccessFault(addr);
         }
         uint64_t nbytes = size / 8;
         uint64_t index = (addr - DRAM_BASE);
         for (uint64_t i = 0; i < nbytes; ++i) {
             uint64_t offset = 8 * i;
-            dram[index + i] = ((value >> offset) & 0xff);
+            dram[index + i] = (uint8_t)((value >> offset) & 0xff);
         }
     }
 

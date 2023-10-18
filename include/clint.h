@@ -14,9 +14,10 @@ public:
     Clint() : mtime(0), mtimecmp(0) {}
 
     uint64_t load(uint64_t addr, uint64_t size) {
-        if (size != 64) {
-            throw LoadAccessFault(addr);
-        }
+        // if (size != 64) {
+        //     std::cerr << "clint LoadAccessFault " << size << std::endl;
+        //     throw LoadAccessFault(addr);
+        // }
         if (CLINT_MTIMECMP == addr) {
             return mtimecmp;
         } else if (CLINT_MTIME == addr) {

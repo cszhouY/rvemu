@@ -6,6 +6,8 @@
 #include "Bus.h"
 #include "CSR.h"
 #include "interrupt.h"
+#include "virtqueue.h"
+#include "util/circularList.h"
 
 #include <vector>
 #include <sstream>
@@ -25,6 +27,10 @@ enum Reg_t {
     A6, A7, S2, S3, S4, S5, S6, S7, S8, S9, S10, S11, T3, T4, T5, T6 
 };
 
+enum AccessType {
+    Instruction, Load, Store
+};
+
 // Riscv Privilege Mode
 typedef uint64_t Mode;
 const Mode user_mode = 0b00;
@@ -33,27 +39,46 @@ const Mode machine_mode = 0b11;
 
 class CPU {
 public:
-	CPU(std::vector<uint8_t>& code) : bus(code), mode(machine_mode) {
+	CPU(std::vector<uint8_t>& code, std::vector<uint8_t>& disk_image) : bus(code, disk_image), mode(machine_mode) {
         for(int i = 0; i < 32; ++i) {
         	regs[i] = 0;
         }
         regs[2] = DRAM_END;
         pc = DRAM_BASE;
+        enable_paging = false;
+        page_table = 0;
     }
 
     // Load a value from a dram.
     uint64_t load(uint64_t addr, uint64_t size) {
+        uint64_t paddr = translate(addr, AccessType::Load);
         return bus.load(addr, size);
     }
 
     // Store a value to a dram.
     void store(uint64_t addr, uint64_t size, uint64_t value) {
+        // if (addr == 0x80013dc8 + 8) {
+        //     std::cout <<"sss" << std::hex << value << " " <<  fetch()<< std::endl;
+        //     std::cout <<"load" << regs[S1] + 64 << " " << load(regs[S1] + 64, 64) << std::endl;
+        // }
+        // if (addr == 0x80013da8 ) {
+        //     std::cout <<"0x80013da8: " << std::hex << value << " " <<  fetch()<< std::endl;
+        // }
+        // the above is code for debugging
+        uint64_t paddr = translate(addr, AccessType::Store);
         bus.store(addr, size, value);
     }
 
     // Get an instruction from the dram.
     uint64_t fetch() {
-        return bus.load(pc, 32);
+        uint64_t ppc = translate(pc, AccessType::Instruction);
+        uint64_t inst;
+        try{
+            inst = bus.load(ppc, 32);
+        } catch(LoadAccessFault & e) {
+            throw InstructionAccessFault(pc);
+        }
+        return inst;
     } 
 
     uint64_t get_reg_value(Reg_t t) const {
@@ -76,11 +101,28 @@ public:
 
     void check_pending_interrupt();
 
+    void disk_access();
+
+    void update_paging(uint64_t csr_addr);
+
+    uint64_t translate(uint64_t addr, AccessType acess_type);
+
 	void circle() {
         uint32_t inst = 0, new_pc = 0;
+        int s = 1;
+        // struct Info{
+        //     uint32_t inst;
+        //     uint64_t sp;
+        // };
+        // CircularList<Info> instCache(20);
         while (pc <= DRAM_END) {
             try {
                 inst = fetch();
+                // Info info= {inst, regs[SP]};
+                // instCache.insert(info);
+                s++;
+                // std::cout << "(" << std::dec << s++ << ") ";
+                // std::cout << std::hex << inst << std::endl; 
                 new_pc = execute(inst);
                 pc = new_pc;
                 check_pending_interrupt();
@@ -88,6 +130,10 @@ public:
                 handle_excption(e);
                 if (e.is_fatal()) {
                     std::cout << "\033[1m\033[31m" << e.what() << "#" << std::hex << e.value() << "\033[0m" << std::endl;
+                    // for (auto & i : instCache) {
+                    //     std::cout << std::hex << i.inst << " " << i.sp << std::endl;
+                    // }
+                    // std::cout << load(regs[A1] + 8, 64) << std::endl;
                     break;
                 }
                 continue;
@@ -130,6 +176,9 @@ private:
     CSR csr;
     // The current priviledge mode.
     Mode mode;
+
+    bool enable_paging;
+    uint64_t page_table;
 };
 
 uint64_t CPU::execute(uint64_t inst) {
@@ -161,12 +210,12 @@ uint64_t CPU::execute(uint64_t inst) {
                     return update_pc();
                 }
                 case 0x02: { // LW
-                    uint64_t val = load(addr, 16);
+                    uint64_t val = load(addr, 32);
                     regs[rd] = (uint64_t)(int64_t)(int32_t)val;
                     return update_pc();
                 }
                 case 0x03: { // LD
-                	uint64_t val = load(addr, 32);
+                	uint64_t val = load(addr, 64);
                     regs[rd] = (uint64_t)(int64_t)(int64_t)val;
                     return update_pc();
                 }
@@ -226,12 +275,12 @@ uint64_t CPU::execute(uint64_t inst) {
                     return update_pc();
                 }
                 case 0x05: { // SRLI/SRAI
-                    switch (funct7) {
+                    switch (funct7 >> 1) {
                         case 0x00: {// SRLI
                             regs[rd] = regs[rs1] >> shamt;
                             return update_pc();
                         }
-                        case 0x20: { // SRAI
+                        case 0x10: { // SRAI
                             regs[rd] = (uint64_t)((int64_t)regs[rs1] >> shamt);
                             return update_pc();
                         }
@@ -260,7 +309,7 @@ uint64_t CPU::execute(uint64_t inst) {
         }
         case 0x1b: {
         	uint64_t imm = (uint64_t)((int64_t)(int32_t)inst >> 20);
-        	// "SLLIW, SRLIW, and SRAIW encodings with imm[5] ̸= 0 are reserved."
+        	// "SLLIW, SRLIW, and SRAIW encodings with imm[5] != 0 are reserved."
         	uint32_t shamt = (uint32_t)(imm & 0x1f);
         	switch(funct3) {
         	case 0x0: { // ADDIW
@@ -528,7 +577,7 @@ uint64_t CPU::execute(uint64_t inst) {
         case 0x67: {// JALR
             uint64_t t = pc + 4;
             uint64_t imm = (uint64_t)((int64_t)(int32_t)(inst & 0xfff00000) >> 20);
-            uint64_t new_pc = (regs[rs1] + imm) & (~1);
+            uint64_t new_pc = (regs[rs1] + imm) & (~(uint64_t)1);
             regs[rd] = t;
             return new_pc;
         }
@@ -545,7 +594,21 @@ uint64_t CPU::execute(uint64_t inst) {
             size_t csr_addr = (size_t)((inst & 0xfff00000) >> 20);
             switch(funct3) {
             case 0x0: {
-                if (0x2 == rs2 && 0x8 == funct7) {  // SRET
+                if (0x0 == rs2 && 0x0 == funct7) {
+                    if (user_mode == mode) {
+                        throw EnvironmentCallFromUMode(pc);
+                    }
+                    else if (supervisor_mode == mode) {
+                        throw EnvironmentCallFromSMode(pc);
+                    }
+                    else {
+                        throw EnvironmentCallFromMMode(pc);
+                    }
+                }
+                else if (0x1 == rs2 && 0x0 == funct7) {
+                    throw Breakpoint(pc);
+                }
+                else if (0x2 == rs2 && 0x8 == funct7) {  // SRET
                     // When the SRET instruction is executed to return from the trap
                     // handler, the privilege level is set to user mode if the SPP
                     // bit is 0, or supervisor mode if the SPP bit is 1. The SPP bit
@@ -598,18 +661,21 @@ uint64_t CPU::execute(uint64_t inst) {
                 uint64_t t = csr.load(csr_addr);
                 csr.store(csr_addr, regs[rs1]);
                 regs[rd] = t;
+                update_paging(csr_addr);
                 return update_pc();
             }
             case 0x2: {  // CSRRS
                 uint64_t t = csr.load(csr_addr);
                 csr.store(csr_addr, t | regs[rs1]);
                 regs[rd] = t;
+                update_paging(csr_addr);
                 return update_pc();
             }
             case 0x3: {  // CSRRC
                 uint64_t t = csr.load(csr_addr);
                 csr.store(csr_addr, t & (~regs[rs1]));
                 regs[rd] = t;
+                update_paging(csr_addr);
                 return update_pc();
             }
             case 0x5: {  // CSRRWI
@@ -617,6 +683,7 @@ uint64_t CPU::execute(uint64_t inst) {
                 uint64_t t = csr.load(csr_addr);
                 csr.store(csr_addr, zimm);
                 regs[rd] = t;
+                update_paging(csr_addr);
                 return update_pc();
             }
             case 0x6: { // CSRRSI
@@ -624,6 +691,7 @@ uint64_t CPU::execute(uint64_t inst) {
                 uint64_t t = csr.load(csr_addr);
                 csr.store(csr_addr, t | zimm);
                 regs[rd] = t;
+                update_paging(csr_addr);
                 return update_pc();
             }
             case 0x7: { // CSRRCI
@@ -631,6 +699,7 @@ uint64_t CPU::execute(uint64_t inst) {
                 uint64_t t = csr.load(csr_addr);
                 csr.store(csr_addr, t & (~zimm));
                 regs[rd] = t;
+                update_paging(csr_addr);
                 return update_pc();
             }
             default: {
@@ -841,6 +910,10 @@ void CPU::check_pending_interrupt() {
     if (bus.uart_is_interrupting()) {
         bus.store(PLIC_SCLAIM, 32, UART_IRQ);
         csr.store(MIP, csr.load(MIP) | MASK_SEIP);
+    } else if (bus.get_virtio_blk().is_interrupting()) {
+        disk_access();
+        bus.store(PLIC_SCLAIM, 32, VIRTIO_IRQ);
+        csr.store(MIP, csr.load(MIP) | MASK_SEIP);
     }
     // 3.1.9 & 4.1.3
     // Multiple simultaneous interrupts destined for M-mode are handled in the following decreasing
@@ -870,6 +943,158 @@ void CPU::check_pending_interrupt() {
         csr.store(MIP, csr.load(MIP) & (~MASK_STIP));
         throw SupervisorTimerInterrupt();
     }
+}
+
+void CPU::disk_access() {
+    const uint64_t desc_size = sizeof(VirtqDesc);
+    // 2.6.2 Legacy Interfaces: A Note on Virtqueue Layout
+    // ------------------------------------------------------------------
+    // Descriptor Table  | Available Ring | (...padding...) | Used Ring
+    // ------------------------------------------------------------------
+    uint64_t desc_addr = bus.get_virtio_blk().desc_addr();
+    uint64_t avail_addr = desc_addr + DESC_NUM * desc_size;
+    uint64_t used_addr = desc_addr + PAGE_SIZE;
+
+    // cast addr to reference to ease field access.
+    VirtqAvail* virtq_avail = (VirtqAvail*)avail_addr;
+    VirtqUsed* virtq_used = (VirtqUsed*)used_addr;
+
+    // The idx field of virtq_avail should be indexed into available ring to get the
+    // index of descriptor we need to process.
+    size_t idx = bus.load((uint64_t)(&virtq_avail->idx), 16);
+    size_t index = bus.load((uint64_t)(&virtq_avail->ring[idx % DESC_NUM]), 16);
+
+    // The first descriptor:
+    // which contains the request information and a pointer to the data descriptor.
+    uint64_t desc_addr0 = desc_addr + desc_size * index;
+    VirtqDesc* virtq_desc0 = (VirtqDesc*)desc_addr0;
+    // The addr field points to a virtio block request. We need the sector number stored 
+    // in the sector field. The iotype tells us whether to read or write.
+    uint64_t req_addr = bus.load((uint64_t)(&virtq_desc0->addr), 64);
+    VirtioBlkRequest* virtq_blk_req = (VirtioBlkRequest*)req_addr;
+    uint64_t blk_sector = bus.load((uint64_t)(&virtq_blk_req->sector), 64);
+    uint32_t iotype = bus.load((uint64_t)(&virtq_blk_req->iotype), 32);
+    // std::cout << "iotype: " << iotype << "\n";
+    // The next field points to the second descriptor. (data descriptor)
+    size_t next0 = bus.load((uint64_t)(&virtq_desc0->next), 16);
+
+    // the second descriptor. 
+    uint64_t desc_addr1 = desc_addr + desc_size * next0;
+    VirtqDesc* virtq_desc1 = (VirtqDesc*)desc_addr1;
+    // The addr field points to the data to read or write
+    uint64_t addr1 = bus.load((uint64_t)(&virtq_desc1->addr), 64);
+    // the len donates the size of the data
+    uint32_t len1 = bus.load((uint64_t)(&virtq_desc1->len), 32);
+
+    switch (iotype) {
+        case VIRTIO_BLK_T_OUT: {
+            for (uint32_t i = 0; i < len1; ++i) {
+                uint8_t data = bus.load(addr1 + i, 8);
+                bus.get_virtio_blk().write_disk(blk_sector * SECTOR_SIZE + i, data);
+            }
+            break;
+        }
+        case VIRTIO_BLK_T_IN: {
+            for (uint32_t i = 0; i < len1; ++i) {
+                uint8_t data = bus.get_virtio_blk().read_disk(blk_sector * SECTOR_SIZE + i);
+                bus.store(addr1 + i, 8, (uint64_t)data);
+            }
+            break;
+        }
+        default:
+            throw std::runtime_error("Unreachable code reached");
+    }
+
+    uint16_t new_id = bus.get_virtio_blk().get_new_id();
+    bus.store((uint64_t)(&virtq_used->idx), 16, new_id % 8);
+}
+
+void CPU::update_paging(uint64_t csr_addr) {
+    if (csr_addr != SATP) {
+        // std::cout << "csr_addr != SATP\n";
+        return;
+    }
+
+    uint64_t satp = csr.load(SATP);
+    page_table = (satp & MASK_PPN) * PAGE_SIZE;
+
+    uint64_t mode = satp >> 60;
+    enable_paging = (8 == mode); // Sv39
+}
+
+uint64_t CPU::translate(uint64_t addr, AccessType access_type) {
+    if(!enable_paging) {
+        // std::cout<<"enable_paging = false\n";
+        return addr;
+    }
+    // std::cout << "translate\n";
+    int levels = 3;
+    uint64_t vpn[] = {(addr >> 12) & 0x1ff, (addr >> 21) & 0x1ff, (addr >> 30) & 0x1ff};
+    uint64_t a = page_table;
+    uint64_t i = levels - 1;
+    uint64_t pte;
+    
+    while(1) {
+        pte = bus.load(a + vpn[i] * 8, 64);
+        uint64_t v = pte & 1;
+        uint64_t r = (pte >> 1) & 1;
+        uint64_t w = (pte >> 2) & 1;
+        uint64_t x = (pte >> 3) & 1;
+        if (0 == v || (0 == r && 1 == w)) {
+            if (access_type == AccessType::Instruction) {
+                throw InstructionPageFault(addr);
+            }
+            else if (access_type == AccessType::Load) {
+                throw LoadPageFault(addr);
+            }
+            else if (access_type == AccessType::Store) {
+                throw StoreAMOPageFault(addr);
+            }
+        }
+
+        if (1 == r || 1 == x) {
+            break;
+        }
+
+        i--;
+
+        uint64_t ppn = (pte >> 10) & 0x0fff'ffff'ffff;
+        a = ppn * PAGE_SIZE;
+
+        if (i < 0) {
+            if (access_type == AccessType::Instruction) {
+                throw InstructionPageFault(addr);
+            }
+            else if (access_type == AccessType::Load) {
+                throw LoadPageFault(addr);
+            }
+            else if (access_type == AccessType::Store) {
+                throw StoreAMOPageFault(addr);
+            }
+        }
+    }
+
+    uint64_t ppn[] = {(pte >> 10) & 0x1ff, (pte >> 19) & 0x1ff, (pte >> 28) & 0x03ff'ffff};
+    uint64_t offset = addr & 0xfff;
+    switch(i) {
+    case 0:
+        return (((pte >> 10) & 0x0fff'ffff'ffff) << 12) | offset;
+    case 1:
+        return (ppn[2] << 30) | (ppn[1] << 21) | (vpn[0] << 12) | offset;
+    case 2:
+        return (ppn[2] << 30) | (vpn[1] << 21) | (vpn[0] << 12) | offset;
+    default:
+        if (access_type == AccessType::Instruction) {
+            throw InstructionPageFault(addr);
+        }
+        else if (access_type == AccessType::Load) {
+            throw LoadPageFault(addr);
+        }
+        else if (access_type == AccessType::Store) {
+            throw StoreAMOPageFault(addr);
+        }
+    }
+    return addr;
 }
 
 #endif

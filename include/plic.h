@@ -10,6 +10,7 @@ public:
 
     uint64_t load(uint64_t addr, uint64_t size) {
         if (size != 32) {
+            std::cerr << "plic LoadAccessFault\n";
             throw LoadAccessFault(addr);
         }
         if(PLIC_PENDING == addr) {

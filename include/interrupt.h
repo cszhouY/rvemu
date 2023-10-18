@@ -6,7 +6,7 @@
 
 const uint64_t MASK_INTERRUPT_BIT = 1ull << 63;
 
-class RISCVInterrupt: public std::exception {
+class RISCVInterrupt {
 public:
 	RISCVInterrupt(uint64_t code): code_(code) {}
 	uint64_t code() { return code_; }

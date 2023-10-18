@@ -85,6 +85,9 @@ const uint64_t MASK_MTIP = 1ull << 7;
 const uint64_t MASK_SEIP = 1ull << 9;
 const uint64_t MASK_MEIP = 1ull << 11;
 
+// SATP field
+const uint64_t MASK_PPN = (1ull << 44) - 1;
+
 class CSR {
 public:
 	CSR() {

@@ -22,7 +22,10 @@ std::unique_ptr<CPU> get_cpu_test(const std::string & asm_str, size_t clock, con
     }
     std::vector<uint8_t> code((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
     file.close();
-    std::unique_ptr<CPU> cpu = std::make_unique<CPU>(code);
+
+    std::vector<uint8_t> img;
+
+    std::unique_ptr<CPU> cpu = std::make_unique<CPU>(code, img);
     // cpu->circle(clock);
     for(size_t i = 0; i < clock; ++i) {
         if(cpu->get_pc_value() > DRAM_END) {
@@ -61,7 +64,10 @@ std::unique_ptr<CPU> get_cpu_test(const std::string & src_str, const std::string
     }
     std::vector<uint8_t> code((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
     file.close();
-    std::unique_ptr<CPU> cpu = std::make_unique<CPU>(code);
+
+    std::vector<uint8_t> img;
+
+    std::unique_ptr<CPU> cpu = std::make_unique<CPU>(code, img);
     cpu->circle();
     return cpu;
 }
